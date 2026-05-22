@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>BTC Tick</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #111;
+    color: white;
+    font-family: monospace;
+    overflow: hidden;
+    transition: background 0.05s;
+  }
+  #layout {
+    display: flex;
+    height: 100%;
+  }
+  #book {
+    width: 320px;
+    background: #1a1a1a;
+    padding: 12px;
+    box-sizing: border-box;
+    overflow: hidden;
+    border-right: 1px solid #333;
+  }
+  #book h2 {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+    opacity: 0.6;
+    text-align: center;
+  }
+  .book-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    padding: 2px 6px;
+    position: relative;
+  }
+  .book-row .bg {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    opacity: 0.2;
+    z-index: 0;
+  }
+  .book-row .price,
+  .book-row .size {
+    position: relative;
+    z-index: 1;
+  }
+  .ask .price { color: #ff5252; }
+  .bid .price { color: #69f0ae; }
+  .ask .bg { background: #ff5252; }
+  .bid .bg { background: #69f0ae; }
+  #spread {
+    text-align: center;
+    font-size: 12px;
+    opacity: 0.5;
+    margin: 6px 0;
+  }
+  #ticks {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #tick-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    width: 60%;
+    max-width: 600px;
+  }
+  #tick-list li {
+    font-size: 32px;
+    padding: 8px 20px;
+    border-bottom: 1px solid #2a2a2a;
+    display: flex;
+    justify-content: space-between;
+    transition: background 0.3s;
+  }
+  #tick-list li:first-child {
+    font-size: 56px;
+    font-weight: bold;
+  }
+  .up { color: #69f0ae; }
+  .down { color: #ff5252; }
+  #status {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    font-size: 12px;
+    opacity: 0.5;
+  }
+</style>
+</head>
+<body>
+
+<div id="layout">
+  <div id="book">
+    <h2>ORDER BOOK</h2>
+    <div id="asks"></div>
+    <div id="spread">---</div>
+    <div id="bids"></div>
+  </div>
+
+  <div id="ticks">
+    <ul id="tick-list"></ul>
+  </div>
+</div>
+
+<div id="status">starting...</div>
+
+<script>
+  const asksEl = document.getElementById('asks');
+  const bidsEl = document.getElementById('bids');
+  const spreadEl = document.getElementById('spread');
+  const tickListEl = document.getElementById('tick-list');
+  const statusEl = document.getElementById('status');
+
+  let lastPrice = null;
+  let ticks = [];
+  let tradeCount = 0;
+
+  // --- trade stream ---
+  function connectTrades() {
+    const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
+
+    ws.onmessage = (event) => {
+      const trade = JSON.parse(event.data);
+      const price = parseFloat(trade.p);
+
+      let direction = 'flat';
+      if (lastPrice !== null) {
+        if (price > lastPrice) direction = 'up';
+        else if (price < lastPrice) direction = 'down';
+      }
+
+      if (direction === 'up') document.body.style.background = '#00c853';
+      else if (direction === 'down') document.body.style.background = '#d50000';
+
+      // only add to list if price actually changed
+      if (price !== lastPrice) {
+        ticks.unshift({ price: price, direction: direction });
+        if (ticks.length > 10) ticks.pop();
+        renderTicks();
+      }
+
+      lastPrice = price;
+      tradeCount++;
+      statusEl.textContent = 'Binance · ' + tradeCount + ' trades';
+    };
+
+    ws.onclose = () => {
+      statusEl.textContent = 'trades disconnected · reconnecting...';
+      setTimeout(connectTrades, 2000);
+    };
+  }
+
+  function renderTicks() {
+    tickListEl.innerHTML = '';
+    for (let i = 0; i < ticks.length; i++) {
+      const t = ticks[i];
+      const li = document.createElement('li');
+      li.className = t.direction;
+      const priceStr = '$' + t.price.toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      });
+      li.innerHTML = '<span>' + priceStr + '</span>';
+      tickListEl.appendChild(li);
+    }
+  }
+
+  // --- order book stream ---
+  function connectBook() {
+    const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@depth20@100ms');
+
+    ws.onmessage = (event) => {
+      const book = JSON.parse(event.data);
+      renderBook(book.asks, book.bids);
+    };
+
+    ws.onclose = () => {
+      setTimeout(connectBook, 2000);
+    };
+  }
+
+  function renderBook(asks, bids) {
+    // asks: lowest at bottom (closest to spread). reverse so lowest is last.
+    const askRows = asks.slice(0, 10).reverse();
+    asksEl.innerHTML = '';
+    let maxAskSize = Math.max(...askRows.map(a => parseFloat(a[1])));
+    for (const [price, size] of askRows) {
+      asksEl.appendChild(makeRow(price, size, 'ask', maxAskSize));
+    }
+
+    // bids: highest at top (closest to spread)
+    const bidRows = bids.slice(0, 10);
+    bidsEl.innerHTML = '';
+    let maxBidSize = Math.max(...bidRows.map(b => parseFloat(b[1])));
+    for (const [price, size] of bidRows) {
+      bidsEl.appendChild(makeRow(price, size, 'bid', maxBidSize));
+    }
+
+    // spread
+    const bestAsk = parseFloat(asks[0][0]);
+    const bestBid = parseFloat(bids[0][0]);
+    const spread = bestAsk - bestBid;
+    spreadEl.textContent = 'spread $' + spread.toFixed(2);
+  }
+
+  function makeRow(price, size, side, maxSize) {
+    const row = document.createElement('div');
+    row.className = 'book-row ' + side;
+
+    const sizeNum = parseFloat(size);
+    const widthPct = (sizeNum / maxSize) * 100;
+
+    const bg = document.createElement('div');
+    bg.className = 'bg';
+    bg.style.width = widthPct + '%';
+
+    const priceSpan = document.createElement('span');
+    priceSpan.className = 'price';
+    priceSpan.textContent = parseFloat(price).toFixed(2);
+
+    const sizeSpan = document.createElement('span');
+    sizeSpan.className = 'size';
+    sizeSpan.textContent = sizeNum.toFixed(4);
+
+    row.appendChild(bg);
+    row.appendChild(priceSpan);
+    row.appendChild(sizeSpan);
+    return row;
+  }
+
+  connectTrades();
+  connectBook();
+</script>
+</body>
+</html>
